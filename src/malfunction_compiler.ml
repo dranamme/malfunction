@@ -5,6 +5,22 @@ open Malfunction
 open Malfunction_parser
 open Malfunction_compat
 
+
+open Picos
+
+(* let cons x l : 'a list = x::l *)
+
+
+(* let%async rec map_seq_tmaa (f : 'a -> 'b) (t : 'a list) = *)
+(*   match t with *)
+(*   | [] -> [] *)
+(*   | x::l -> *)
+(*      let res = cons (f x) (Computation.await (map_seq_tmaa f l)) in *)
+(*      res *)
+
+(* and await_map_seq_tmaa f l = *)
+(*   Computation.await (map_seq_tmaa f l) *)
+
 (* List.map, but guarantees left-to-right evaluation *)
 let rec lrmap f = function
 | [] -> []
@@ -50,7 +66,7 @@ let rec reorder = function
      let t2 = ev t2 in
      Mnumop2(op, ty, t1, t2))
 
-| Mconvert(src, dst, t) -> 
+| Mconvert(src, dst, t) ->
    reorder_sub `Pure (fun ev ->
      Mconvert(src, dst, ev t))
 
@@ -358,6 +374,423 @@ let global_to_lambda = function
      let body = lprim (Pccall p) (List.map (fun x -> Lvar x) params) in
      lfunction params body
 
+(* let async e = *)
+(*   let p = Computation.create () in *)
+(*   let fiber = Fiber.create ~forbid:false p in *)
+(*   Fiber.spawn fiber (fun _ -> Computation.return p @@ e ()); *)
+(*   p *)
+
+let%async rec to_lambda_tmca env term =
+  (* async @@ fun () -> *)
+  match term with
+  | Mvar v ->
+     Lvar v
+  | Mlambda (params, e) ->
+     let r = lfunction params (Computation.await @@ to_lambda_tmca env e) in
+     r
+  | Mapply (fn, args) ->
+     let ap_func fn = lapply fn (List.map (fun a -> Computation.await @@ to_lambda_tmca env a) args) in
+     begin
+       match fn with
+       | Mglobal v ->
+          begin
+            match lookup env v with
+            | Glob_prim p when p.prim_arity = List.length args ->
+               let r = lprim (Pccall p) (List.map (fun a -> Computation.await @@ to_lambda_tmca env a) args) in
+               r
+            | g ->
+               let r = ap_func (global_to_lambda g) in r
+          end
+       | fn ->
+          let r = ap_func (Computation.await @@ to_lambda_tmca env fn) in
+          r
+     end
+  | Mlet (bindings, body) ->
+     Computation.await @@ bindings_to_lambda_tmca env bindings (Computation.await @@ to_lambda_tmca env body)
+  | Mnum (`Int n) ->
+     Lconst (Const_base (Const_int n))
+  | Mnum (`Int32 n) ->
+     Lconst (Const_base (Const_int32 n))
+  | Mnum (`Int64 n) ->
+     Lconst (Const_base (Const_int64 n))
+  | Mnum (`Bigint n) ->
+     begin
+       match Z.to_int n with
+       | n' ->
+          assert (Obj.repr n = Obj.repr n');
+          Lconst (Const_base (Const_int n'))
+       | exception Z.Overflow ->
+          let tempr = builtin env ["Z"; "of_string"] [Lconst (Const_immstring (Z.to_string n))] in
+          tempr
+     end
+  | Mnum (`Float64 f) ->
+     Lconst (Const_base (Const_float (string_of_float f)))
+  | Mstring s ->
+     Lconst (Const_immstring s)
+  | Mglobal v ->
+     let r = global_to_lambda (lookup env v) in r
+  | Mswitch (scr, cases) ->
+     let scr = Computation.await @@ to_lambda_tmca env scr in
+     let rec flatten acc = function
+       | ([], _) :: _ -> assert false
+       | ([sel], e) :: rest -> flatten ((sel, Computation.await @@ to_lambda_tmca env e) :: acc) rest
+       | (sels, e) :: rest ->
+          let i = next_raise_count () in
+          let cases = List.map (fun s -> s, Lstaticraise(i, [])) sels in
+          Lstaticcatch (flatten (cases @ acc) rest, (i, []), Computation.await @@ to_lambda_tmca env e)
+       | [] ->
+          let rec partition (ints, tags, deftag) = function
+            | [] -> (List.rev ints, List.rev tags, deftag)
+            | (`Tag _, _) as c :: cases -> partition (ints, c :: tags, deftag) cases
+            | (`Deftag, _) as c :: cases -> partition (ints, tags, Some c) cases
+            | (`Intrange _, _) as c :: cases -> partition (c :: ints, tags, deftag) cases in
+          let (intcases, tagcases, deftag) = partition ([],[],None) (List.rev acc) in
+          lbind "switch" scr (fun scr ->
+            let tagswitch = match tagcases, deftag with
+              | [], None -> None
+              | [_,e], None | [], Some (_, e) -> Some e
+              | tags, def ->
+                 let numtags = match def with
+                   | Some _ -> (max_tag :> int)
+                   | None -> 1 + List.fold_left (fun s (`Tag i, _) -> max s (i :> int)) (-1) tags in
+                 Some (lswitch scr {
+                   sw_numconsts = 0; sw_consts = []; sw_numblocks = numtags;
+                   sw_blocks = List.map (fun (`Tag i, e) -> i, e) tags;
+                   sw_failaction = match def with None -> None | Some (`Deftag,e) -> Some e
+                 }) in
+            let intswitch = match intcases with
+              | [] -> None
+              | [_,e] -> Some e
+              | ints -> Some (IntSwitch.compile_int_switch scr ints) in
+            match intswitch, tagswitch with
+            | None, None -> assert false
+            | None, Some e | Some e, None -> e
+            | Some eint, Some etag ->
+               Lifthenelse (lprim Pisint [scr], eint, etag)) in
+     let r = flatten [] cases in r
+  | Mnumop1 (op, ty, e) ->
+     let e = Computation.await @@ to_lambda_tmca env e in
+     let ones32 = Const_base (Asttypes.Const_int32 (Int32.of_int (-1))) in
+     let ones64 = Const_base (Asttypes.Const_int64 (Int64.of_int (-1))) in
+     let code = match op, ty with
+       | `Neg, `Int -> lprim Pnegint [e]
+       | `Neg, `Int32 -> lprim (Pnegbint Pint32) [e]
+       | `Neg, `Int64 -> lprim (Pnegbint Pint64) [e]
+       | `Neg, `Bigint -> builtin env ["Z"; "neg"] [e]
+       | `Neg, `Float64 -> lprim Pnegfloat [e]
+       | `Not, `Int -> lprim Pnot [e]
+       | `Not, `Int32 ->
+          lprim (Pxorbint Pint32) [e; Lconst ones32]
+       | `Not, `Int64 ->
+          lprim (Pxorbint Pint64) [e; Lconst ones64]
+       | `Not, `Bigint -> builtin env ["Z"; "lognot"] [e]
+       | `Not, `Float64 -> assert false in
+     code
+  | Mnumop2 (op, ((`Int|`Int32|`Int64) as ty), e1, e2) ->
+     let prim = match ty with
+       | `Int ->
+          (match op with
+            `Add -> Paddint | `Sub -> Psubint | `Mul -> Pmulint
+          | `Div -> Pdivint Safe | `Mod -> Pmodint Safe
+          | `And -> Pandint | `Or -> Porint | `Xor -> Pxorint
+          | `Lsl -> Plslint | `Lsr -> Plsrint | `Asr -> Pasrint
+          | `Lt -> Pintcomp Clt | `Gt -> Pintcomp Cgt
+          | `Lte -> Pintcomp Cle | `Gte -> Pintcomp Cge
+          | `Eq -> Pintcomp Ceq)
+       | (`Int32 | `Int64) as ty ->
+          let t = match ty with `Int32 -> Pint32  | `Int64 -> Pint64 in
+          (match op with
+            `Add -> Paddbint t | `Sub -> Psubbint t | `Mul -> Pmulbint t
+          | `Div -> Pdivbint { size = t; is_safe = Safe }
+          | `Mod -> Pmodbint { size = t; is_safe = Safe }
+          | `And -> Pandbint t | `Or -> Porbint t | `Xor -> Pxorbint t
+          | `Lsl -> Plslbint t | `Lsr -> Plsrbint t | `Asr -> Pasrbint t
+          | `Lt -> Pbintcomp (t, Clt) | `Gt -> Pbintcomp (t, Cgt)
+          | `Lte -> Pbintcomp (t, Cle) | `Gte -> Pbintcomp (t, Cge)
+          | `Eq -> Pbintcomp (t, Ceq)) in
+     Lprim (prim, [Computation.await @@ to_lambda_tmca env e1;
+                   Computation.await @@ to_lambda_tmca env e2], loc_none) (* ici dépseudoifié *)
+  | Mnumop2 (op, `Bigint, e1, e2) ->
+     (* let e1 = Computation.await @@ to_lambda_tmca env e1 in *)
+     (* let e2 = Computation.await @@ to_lambda_tmca env e2 in *)
+     let fn = match op with
+       | `Add -> "add" | `Sub -> "sub"
+       | `Mul -> "mul" | `Div -> "div" | `Mod -> "rem"
+       | `And -> "logand" | `Or -> "logor" | `Xor -> "logxor"
+       | `Lsl -> "shift_left" | `Lsr -> "shift_right" | `Asr -> "shift_right"
+       | `Lt -> "lt" | `Gt -> "gt"
+       | `Lte -> "leq" | `Gte -> "geq" | `Eq -> "equal" in
+     (* inlining [builtin env ["Z"; fn] [e1; e2]] *)
+     begin
+       let p = Longident.Ldot (Longident.Lident "Z", fn) in
+       (* List.fold_left (fun id s -> Longident.Ldot (id, s)) **)
+       (*         (Longident.Lident "Z") [fn] in *)
+       match lookup env p with
+       | Glob_val v ->
+          (* inlining [lapply v [e1; e2]] *)
+          Lapply {
+              ap_func = v;
+              ap_args = [Computation.await @@ to_lambda_tmca env e1;
+                         Computation.await @@ to_lambda_tmca env e2];
+              ap_loc = loc_none; (* FIXME *)
+              (* #if OCAML_VERSION < (4, 12, 0) -> necessarily at least ocaml 5 *)
+              (*     ap_should_be_tailcall = false; *)
+              (* #else *)
+              ap_tailcall = Default_tailcall;
+              (* #endif *)
+              ap_inlined = Default_inline;
+              ap_specialised = Default_specialise
+            }
+
+       | Glob_prim p ->
+          (* assert (p.prim_arity = List.length [e1; e2]); *)
+          Lprim ((Pccall p), [Computation.await @@ to_lambda_tmca env e1;
+                              Computation.await @@ to_lambda_tmca env e2                   (* e1; e2 *)
+                             ], loc_none)
+     end
+
+  | Mnumop2 (op, `Float64, e1, e2) ->
+     begin match op with
+     | #binary_bitwise_op -> assert false
+     | `Add -> Lprim (Paddfloat, [Computation.await @@ to_lambda_tmca env e1;
+                                 Computation.await @@ to_lambda_tmca env e2], loc_none)
+     | `Sub -> Lprim (Psubfloat, [Computation.await @@ to_lambda_tmca env e1;
+                                 Computation.await @@ to_lambda_tmca env e2], loc_none)
+     | `Mul -> Lprim (Pmulfloat, [Computation.await @@ to_lambda_tmca env e1;
+                                 Computation.await @@ to_lambda_tmca env e2], loc_none)
+     | `Div -> Lprim (Pdivfloat, [Computation.await @@ to_lambda_tmca env e1;
+                                 Computation.await @@ to_lambda_tmca env e2], loc_none)
+     | `Mod -> (* inlining [builtin env ["Stdlib"; "mod_float"] *)
+              (*               [Computation.await @@ to_lambda_tmca env e1; *)
+              (*                Computation.await @@ to_lambda_tmca env e2]] *)
+        begin
+          let p = Longident.Ldot (Longident.Lident "Stdlib", "mod_float") in
+          match lookup env p with
+          | Glob_val v ->
+             (* inlining [lapply v [e1; e2]] *)
+             Lapply {
+                 ap_func = v;
+                 ap_args = [Computation.await @@ to_lambda_tmca env e1;
+                            Computation.await @@ to_lambda_tmca env e2];
+                 ap_loc = loc_none; (* FIXME *)
+                 (* #if OCAML_VERSION < (4, 12, 0) -> necessarily at least ocaml 5 *)
+                 (*     ap_should_be_tailcall = false; *)
+                 (* #else *)
+                 ap_tailcall = Default_tailcall;
+                 (* #endif *)
+                 ap_inlined = Default_inline;
+                 ap_specialised = Default_specialise
+               }
+
+          | Glob_prim p ->
+             (* assert (p.prim_arity = List.length [e1; e2]); *)
+             Lprim ((Pccall p), [Computation.await @@ to_lambda_tmca env e1;
+                                 Computation.await @@ to_lambda_tmca env e2                   (* e1; e2 *)
+                                ], loc_none)
+        end
+
+     | #binary_comparison as op ->
+        let cmp_to_float_comparison op =
+          match op with
+          | `Lt -> CFlt
+          | `Gt -> CFgt
+          | `Lte -> CFle
+          | `Gte -> CFge
+          | `Eq -> CFeq
+        in
+        let cmp = cmp_to_float_comparison op in
+        Lprim ((Pfloatcomp cmp), [Computation.await @@ to_lambda_tmca env e1;
+                                  Computation.await @@ to_lambda_tmca env e2], loc_none) (* ici lprim is pseudocons *)
+     end
+  | Mconvert (src, dst, e) ->
+     let e = Computation.await @@ to_lambda_tmca env e in
+     begin match src, dst with
+       | `Bigint, `Bigint
+       | `Int, `Int
+       | `Int32, `Int32
+       | `Int64, `Int64
+       | `Float64, `Float64 -> e
+       | `Bigint, ((`Int|`Int32|`Int64) as dst) ->
+          (* Zarith raises exceptions on overflow, but we truncate conversions. Not fast. *)
+          let width = match dst with
+            | `Int -> Sys.word_size - 1
+            | `Int32 -> 32
+            | `Int64 -> 64 in
+          let range = Z.(shift_left (of_int 1) width) in
+          let truncated =
+            lbind "range"
+             (builtin env ["Z"; "of_string"] [Lconst (Const_immstring (Z.to_string range))])
+             (fun range ->
+               lbind "masked"
+                 (builtin env ["Z"; "logand"] [e;
+                      builtin env ["Z"; "sub"] [range;
+                                                Lconst (Const_base (Const_int 1))]])
+                 (fun masked ->
+                   Lifthenelse (builtin env ["Z"; "testbit"]
+                                  [masked; Lconst (Const_base (Const_int (width - 1)))],
+                                builtin env ["Z"; "sub"] [masked; range],
+                                masked))) in
+          let fn = match dst with
+            | `Int -> "to_int"
+            | `Int32 -> "to_int32"
+            | `Int64 -> "to_int64" in
+          let tempr = builtin env ["Z"; fn] [truncated] in tempr (* TODO *)
+       | ((`Int|`Int32|`Int64) as src), `Bigint ->
+          let fn = match src with
+            | `Int -> "of_int"
+            | `Int32 -> "of_int32"
+            | `Int64 -> "of_int64" in
+          let tempr = builtin env ["Z"; fn] [e] in tempr (* TODO *)
+       | `Int, `Int32 ->
+          Lprim ((Pbintofint Pint32), [e], loc_none)
+       | `Int, `Int64 ->
+          Lprim ((Pbintofint Pint64), [e], loc_none)
+       | `Int32, `Int ->
+          Lprim ((Pintofbint Pint32), [e], loc_none)
+       | `Int64, `Int ->
+          Lprim ((Pintofbint Pint64), [e], loc_none)
+       | `Int32, `Int64 ->
+          Lprim ((Pcvtbint(Pint32, Pint64)), [e], loc_none)
+       | `Int64, `Int32 ->
+          Lprim ((Pcvtbint(Pint64, Pint32)), [e], loc_none)
+       | `Int, `Float64 ->
+          Lprim (Pfloatofint, [e], loc_none)
+       | `Int32, `Float64 ->
+          let tempr = builtin env ["Int32"; "to_float"] [e] in tempr
+       | `Int64, `Float64 ->
+          let tempr = builtin env ["Int64"; "to_float"] [e] in tempr
+       | `Bigint, `Float64 ->
+          let tempr = builtin env ["Z"; "to_float"] [e] in tempr
+       (* FIXME: error handling on overflow *)
+       | `Float64, `Int ->
+          Lprim (Pintoffloat, [e], loc_none)
+       | `Float64, `Int32 ->
+          let tempr = builtin env ["Int32"; "of_float"] [e] in tempr
+       | `Float64, `Int64 ->
+          let tempr = builtin env ["Int64"; "of_float"] [e] in tempr
+       | `Float64, `Bigint ->
+          let tempr = builtin env ["Z"; "of_float"] [e] in tempr
+     end
+  | Mvecnew (`Array, len, def) ->
+     (* let tempr = *)
+     (* builtin env ["Array"; "make"] [Computation.await @@ to_lambda_tmca env len; *)
+     (*                                Computation.await @@ to_lambda_tmca env def] (\* là directement aussi*\) *)
+     (* in tempr *)
+        begin
+          let p = Longident.Ldot (Longident.Lident "Array", "make") in
+          match lookup env p with
+          | Glob_val v ->
+             (* inlining [lapply v [e1; e2]] *)
+             Lapply {
+                 ap_func = v;
+                 ap_args = [Computation.await @@ to_lambda_tmca env len;
+                            Computation.await @@ to_lambda_tmca env def];
+                 ap_loc = loc_none; (* FIXME *)
+                 (* #if OCAML_VERSION < (4, 12, 0) -> necessarily at least ocaml 5 *)
+                 (*     ap_should_be_tailcall = false; *)
+                 (* #else *)
+                 ap_tailcall = Default_tailcall;
+                 (* #endif *)
+                 ap_inlined = Default_inline;
+                 ap_specialised = Default_specialise
+               }
+
+          | Glob_prim p ->
+             (* assert (p.prim_arity = List.length [e1; e2]); *)
+             Lprim ((Pccall p), [Computation.await @@ to_lambda_tmca env len;
+                                 Computation.await @@ to_lambda_tmca env def                  (* e1; e2 *)
+                                ], loc_none)
+        end
+  | Mvecnew (`Bytevec, len, def) ->
+     (* let tempr = *)
+     (* builtin env ["String"; "make"] [Computation.await @@ to_lambda_tmca env len; *)
+     (*                                 Computation.await @@ to_lambda_tmca env def] (\* et là *\) *)
+     (* in tempr *)
+        begin
+          let p = Longident.Ldot (Longident.Lident "String", "make") in
+          match lookup env p with
+          | Glob_val v ->
+             (* inlining [lapply v [e1; e2]] *)
+             Lapply {
+                 ap_func = v;
+                 ap_args = [Computation.await @@ to_lambda_tmca env len;
+                            Computation.await @@ to_lambda_tmca env def];
+                 ap_loc = loc_none; (* FIXME *)
+                 (* #if OCAML_VERSION < (4, 12, 0) -> necessarily at least ocaml 5 *)
+                 (*     ap_should_be_tailcall = false; *)
+                 (* #else *)
+                 ap_tailcall = Default_tailcall;
+                 (* #endif *)
+                 ap_inlined = Default_inline;
+                 ap_specialised = Default_specialise
+               }
+
+          | Glob_prim p ->
+             (* assert (p.prim_arity = List.length [e1; e2]); *)
+             Lprim ((Pccall p), [Computation.await @@ to_lambda_tmca env len;
+                                 Computation.await @@ to_lambda_tmca env def                   (* e1; e2 *)
+                                ], loc_none)
+        end
+  | Mvecget (ty, vec, idx) ->
+     let prim = match ty with
+       | `Array -> Parrayrefs Paddrarray
+       | `Bytevec -> Pbytesrefs
+(*       | `Floatvec -> Parrayrefs Pfloatarray *) in
+     Lprim (prim, [Computation.await @@ to_lambda_tmca env vec;
+                   Computation.await @@ to_lambda_tmca env idx],
+            loc_none) (* rebelotte *)
+  | Mvecset (ty, vec, idx, v) ->
+     let prim = match ty with
+       | `Array -> Parraysets Paddrarray
+       | `Bytevec -> Pbytessets
+(*       | `Floatvec -> Parraysets Pfloatarray *) in
+     Lprim (prim, [Computation.await @@ to_lambda_tmca env vec;
+                   Computation.await @@ to_lambda_tmca env idx;
+                   Computation.await @@ to_lambda_tmca env v],
+            loc_none) (* même 3 ici ! *)
+  | Mveclen (ty, vec) ->
+     let prim = match ty with
+       | `Array -> Parraylength Paddrarray
+       | `Bytevec -> Pbyteslength
+(*       | `Floatvec -> Parraylength Pfloatarray *) in
+     Lprim (prim, [Computation.await @@ to_lambda_tmca env vec], loc_none)
+  | Mblock (tag, vals) ->
+     Lprim ((Pmakeblock (tag, Immutable, None)), (List.map (fun a -> Computation.await @@ to_lambda_tmca env a) vals), loc_none)
+  | Mfield (idx, e) ->
+      Lprim ((pfield idx), [Computation.await @@ to_lambda_tmca env e], loc_none)
+  | Mlazy e ->
+     let fn = lfunction [fresh "param"] (Computation.await @@ to_lambda_tmca env e) in
+     Lprim ((Pmakeblock (Config.lazy_tag, Mutable, None)), [fn], loc_none)
+  | Mforce e ->
+     let r = Matching.inline_lazy_force (Computation.await @@ to_lambda_tmca env e) loc_none
+     in r
+
+and bindings_to_lambda_tmca env bindings body =
+  let r =
+  List.fold_right (fun b rest -> match b with
+  | `Unnamed e ->
+     Lsequence (Computation.await @@ to_lambda_tmca env e, rest)
+  | `Named (n, e) ->
+     Llet (Strict, Pgenval, n, Computation.await @@ to_lambda_tmca env e, rest)
+  | `Recursive bs ->
+     lletrec (List.map (fun (n, e) -> (n, Computation.await @@ to_lambda_tmca env e)) bs) rest)
+    bindings body
+  in r
+
+
+let to_lambda_tmca env t =
+  let pool = Moonpool.Ws_pool.create ~num_threads:(Domain.recommended_domain_count ()) () in
+  Moonpool.Runner.run_wait_block pool (fun () ->
+      Computation.await @@ to_lambda_tmca env t
+    )
+
+let bindings_to_lambda_tmca env bindings body =
+  let pool = Moonpool.Ws_pool.create ~num_threads:(Domain.recommended_domain_count ()) () in
+  Moonpool.Runner.run_wait_block pool (fun () ->
+      Computation.await @@ bindings_to_lambda_tmca env bindings body
+    )
+
+
 let rec to_lambda env = function
   | Mvar v ->
      Lvar v
@@ -449,7 +882,7 @@ let rec to_lambda env = function
           lprim (Pxorbint Pint32) [e; Lconst ones32]
        | `Not, `Int64 ->
           lprim (Pxorbint Pint64) [e; Lconst ones64]
-       | `Not, `Bigint -> builtin env ["Z"; "lognot"] [e] 
+       | `Not, `Bigint -> builtin env ["Z"; "lognot"] [e]
        | `Not, `Float64 -> assert false in
      code
   | Mnumop2 (op, ((`Int|`Int32|`Int64) as ty), e1, e2) ->
@@ -499,7 +932,7 @@ let rec to_lambda env = function
      | `Div -> lprim Pdivfloat [e1; e2]
      | `Mod -> builtin env ["Stdlib"; "mod_float"] [e1; e2]
      | #binary_comparison as op ->
-        let cmp_to_float_comparison op = 
+        let cmp_to_float_comparison op =
           match op with
           | `Lt -> CFlt
           | `Gt -> CFgt
@@ -520,7 +953,7 @@ let rec to_lambda env = function
        | `Float64, `Float64 -> e
        | `Bigint, ((`Int|`Int32|`Int64) as dst) ->
           (* Zarith raises exceptions on overflow, but we truncate conversions. Not fast. *)
-          let width = match dst with 
+          let width = match dst with
             | `Int -> Sys.word_size - 1
             | `Int32 -> 32
             | `Int64 -> 64 in
@@ -534,7 +967,7 @@ let rec to_lambda env = function
                       builtin env ["Z"; "sub"] [range;
                                                 Lconst (Const_base (Const_int 1))]])
                  (fun masked ->
-                   Lifthenelse (builtin env ["Z"; "testbit"] 
+                   Lifthenelse (builtin env ["Z"; "testbit"]
                                   [masked; Lconst (Const_base (Const_int (width - 1)))],
                                 builtin env ["Z"; "sub"] [masked; range],
                                 masked))) in
@@ -621,6 +1054,9 @@ and bindings_to_lambda env bindings body =
      lletrec (List.map (fun (n, e) -> (n, to_lambda env e)) bs) rest)
     bindings body
 
+
+let async_option = ref false
+
 let setup_options options =
   Clflags.native_code := true;
   Clflags.flambda_invariant_checks := true;
@@ -652,7 +1088,7 @@ let setup_options options =
       *)
   | `Shared ->
      Clflags.shared := true
-  | `Package s -> 
+  | `Package s ->
      let packages = String.split_on_char ',' s in
      let dirs = List.map Findlib.package_directory packages in
      Clflags.include_dirs := dirs @ !Clflags.include_dirs
@@ -665,6 +1101,7 @@ let setup_options options =
     use_inlining_arguments_set o2_arguments;
     use_inlining_arguments_set ~round:0 o1_arguments);
   | `Bytecode -> Clflags.native_code := false
+  | `Async -> async_option := true
    );
   (* FIXME: should we use classic_arguments for non-flambda builds? *)
 
@@ -673,6 +1110,14 @@ let setup_options options =
 
 let module_to_lambda ?options ~module_name:_ ~module_id (Mmod (bindings, exports)) =
   setup_options (match options with Some o -> o | None -> []);
+  (* TODO async option *)
+  let to_lambda' =
+    if !async_option then (fun env a -> to_lambda_tmca env a)
+    else to_lambda in
+  let bindings_to_lambda' =
+    if !async_option then (fun env bindings a -> bindings_to_lambda_tmca env bindings a)
+    else bindings_to_lambda in
+
   let print_if flag printer arg =
     if !flag then Format.printf "%a@." printer arg;
     arg in
@@ -683,8 +1128,8 @@ let module_to_lambda ?options ~module_name:_ ~module_id (Mmod (bindings, exports
     let exports = List.map (fun e -> snd (reorder e)) exports in
     if Config.flambda || not !Clflags.native_code then
       List.length exports,
-      bindings_to_lambda env bindings
-        (lprim (Pmakeblock (0, Immutable, None)) (List.map (to_lambda env) exports))
+      bindings_to_lambda' env bindings
+        (lprim (Pmakeblock (0, Immutable, None)) (List.map (to_lambda' env) exports))
     else begin
       let loc = loc_none (* FIXME *) in
       let num_exports = List.length exports in
@@ -698,15 +1143,15 @@ let module_to_lambda ?options ~module_name:_ ~module_id (Mmod (bindings, exports
         Lprim (pfield pos,
                [Lprim (Pgetglobal module_id, [], loc)], loc) in
       let transl_exports subst =
-        let exps = List.mapi (fun i e -> mod_store i (Subst.apply subst (to_lambda env e))) exports in
+        let exps = List.mapi (fun i e -> mod_store i (Subst.apply subst (to_lambda' env e))) exports in
         List.fold_right (fun x xs -> Lsequence (x, xs)) exps (Lconst Lambda.const_unit) in
       let rec transl_toplevel_bindings pos subst = function
         | `Unnamed e :: rest ->
-           Lsequence (Subst.apply subst (to_lambda env e),
+           Lsequence (Subst.apply subst (to_lambda' env e),
                       transl_toplevel_bindings pos subst rest)
         | `Named (n, e) :: rest ->
            let lam =
-             Llet (Strict, Pgenval, n, Subst.apply subst (to_lambda env e), mod_store pos (Lvar n)) in
+             Llet (Strict, Pgenval, n, Subst.apply subst (to_lambda' env e), mod_store pos (Lvar n)) in
            Lsequence (lam,
                       transl_toplevel_bindings
                         (pos + 1)
@@ -719,7 +1164,7 @@ let module_to_lambda ?options ~module_name:_ ~module_id (Mmod (bindings, exports
                           stores (Lconst Lambda.const_unit) in
            let lam =
              lletrec (bs |> List.map (fun (n, e) ->
-                                (n, Subst.apply subst (to_lambda env e))))
+                                (n, Subst.apply subst (to_lambda' env e))))
                       stores in
            let id_load = ids |> List.mapi (fun i n -> (n, mod_load (pos + i))) in
            let subst = List.fold_left (fun subst (n, l) -> Subst.add n l subst) subst id_load in
@@ -759,7 +1204,7 @@ let delete_temps outfiles =
   in
   List.iter Misc.remove_file temps
 
-type options = [`Verbose | `Shared | `ForPack of string | `Package of string | `Dontlink of string | `Linkpkg | `Thread | `Optimize | `Bytecode] list
+type options = [`Verbose | `Shared | `ForPack of string | `Package of string | `Dontlink of string | `Linkpkg | `Thread | `Optimize | `Bytecode | `Async] list
 
 let ensure_cmi ~module_name ~filename =
   let cmi = module_name ^ ".cmi" in
@@ -922,20 +1367,20 @@ let link_executable ?(options=[]) output tmpfiles =
      | Out_bytecode _ -> failwith "Bytecode linking unsupported"
    in
    let pkgs =
-      options |> (List.filter_map @@ 
+      options |> (List.filter_map @@
       function
       | `Package s -> Some s
       | _ -> None)
    in
    let linkpkg = options |> (List.exists @@ (function `Linkpkg -> true | _ -> false)) in
    let dontlink =
-      options |> (List.filter_map @@ 
+      options |> (List.filter_map @@
       function
       | `Dontlink s -> Some s
       | _ -> None)
    in
    let thread =
-      options |> (List.exists @@ 
+      options |> (List.exists @@
       function
       | `Thread -> true
       | _ -> false)
@@ -944,7 +1389,7 @@ let link_executable ?(options=[]) output tmpfiles =
      match pkgs with
      | [] -> []
      | pkgs -> ["-package"; String.concat "," pkgs] in
-   let dontlink = 
+   let dontlink =
       if dontlink = [] then []
       else ["-dontlink"; String.concat "," dontlink]
    in

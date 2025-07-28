@@ -23,7 +23,7 @@ let repl () =
     with_error_reporting Format.std_formatter () (fun () ->
       let exp = Malfunction_parser.read_expression lexbuf in
       match Malfunction_interpreter.eval exp with
-      | v -> Format.printf "%a\n%!" Malfunction_sexp.print 
+      | v -> Format.printf "%a\n%!" Malfunction_sexp.print
          (Malfunction_interpreter.render_value v);
          loop ()
       | exception (Malfunction_interpreter.Error s) ->
@@ -73,16 +73,19 @@ let parse_args args =
     | "-shared" :: rest -> opts := `Shared :: !opts; parse_opts mode rest
     | "-for-pack" :: o :: rest -> opts := `ForPack o :: !opts; parse_opts mode rest
     | "-package" :: s :: rest -> opts := `Package s :: !opts; parse_opts mode rest
-    | "-dontlink" :: s :: rest -> 
+    | "-dontlink" :: s :: rest ->
       if mode = `Compile then (opts := `Dontlink s :: !opts; parse_opts mode rest)
       else usage ()
-    | "-linkpkg" :: rest -> 
+    | "-linkpkg" :: rest ->
       if mode = `Compile then (opts := `Linkpkg :: !opts; parse_opts mode rest)
       else usage ()
-    | "-thread" :: rest -> 
+    | "-thread" :: rest ->
         if mode = `Compile then (opts := `Thread :: !opts; parse_opts mode rest)
         else usage ()
     | "-O2" :: rest -> opts := `Optimize :: !opts; parse_opts mode rest
+    | "-async" :: rest ->
+       if mode = `Compile then (opts := `Async :: !opts; parse_opts mode rest)
+       else usage ()
     | i :: rest ->
        (match !impl with None -> (impl := Some i; parse_opts mode rest) | _ -> usage ())
     | [] -> run mode !opts !impl !output in
@@ -97,7 +100,7 @@ let parse_args args =
 (*
 let () =
   if not Config.flambda then begin
-    Format.fprintf Format.err_formatter 
+    Format.fprintf Format.err_formatter
       "Malfunction requires a version of OCaml with Flambda enabled\n\
        Try \"opam switch 4.03.0+flambda\"\n";
     exit 1

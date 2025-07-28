@@ -125,4 +125,3 @@ let with_error_reporting ppf def f =
      Printexc.print_backtrace stdout;
      Location.report_exception ppf x;
     def
-

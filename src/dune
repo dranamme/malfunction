@@ -15,7 +15,8 @@
 (library
  (name malfunction)
  (public_name malfunction)
- (libraries compiler-libs.optcomp compiler-libs.bytecomp str zarith findlib dynlink unix)
+ (preprocess (pps ppx_deriving.show ppx_tmaa))
+ (libraries compiler-libs.optcomp compiler-libs.bytecomp str zarith findlib dynlink unix moonpool ppx_tmaa)
  (wrapped false)
  (modes native)
  (modules (:standard \ malfunction_main)))
