@@ -55,8 +55,8 @@ let tag n = `Tag n
 
 
 let gen_sum n =
-  Gen.(let+ k = (int_bound (n-1)) in
-       (k, n-k))
+  Gen.(if n <= 0 then pure (0, 0)
+       else let+ k = (int_bound (n-1)) in (k, n-k))
 
 
 
