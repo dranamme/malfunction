@@ -106,7 +106,7 @@ let bench_tree_sync name f =
     (fun size -> Staged.stage @@ fun () ->
       f @@ Hashtbl.find trees size)
 
-let bench_tree_async name f = 
+let bench_tree_async name f =
   Test.make_indexed ~name ~fmt:"%s %d"
     ~args
     (fun size ->
@@ -120,7 +120,7 @@ let indexed_benchs =
   Test.make_grouped ~name:"tree bench" ~fmt:"%s %s"
     [ test_sync;
       test_async;
-      test_tmca; 
+      test_tmca;
     ]
 
 
@@ -136,7 +136,7 @@ let run_benchmark file benchs =
   in
   let ols =
     Analyze.ols ~bootstrap:0 ~r_square:true ~predictors:[| Measure.run |]
-  in  
+  in
   let results =
     List.map (fun instance -> Analyze.all ols instance raw_results) instances
   in
