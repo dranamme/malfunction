@@ -4,9 +4,10 @@ val delete_temps : outfiles -> unit
 type options = [`Verbose | `Shared | `ForPack of string | `Package of string | `Dontlink of string | `Linkpkg | `Thread | `Optimize | `Bytecode | `Async] list
 
 
-val to_lambda_tmca : Env.t -> Malfunction.t -> Lambda.lambda
-
 val to_lambda : Env.t -> Malfunction.t -> Lambda.lambda
+
+val to_lambda_tmca : Env.t -> Malfunction.t -> Lambda.lambda Picos.Computation.t
+val to_lambda_async : Env.t -> Malfunction.t -> Lambda.lambda Picos.Computation.t
 
 val compile_module :
   ?options:options ->

@@ -84,3 +84,73 @@ let _ =
 
 (* let gen_prog () : t = *)
 (*   Mnum (`Int 3) *)
+
+let rand = Random.State.make [| seed |]
+
+(* range from 10¹ to 10⁶ elements, 5 points per order. *)
+let args = List.init 26 (fun x -> int_of_float (10. ** (float x/.5. +. 1.)))
+let trees =
+  List.map (fun i -> i, Gen.generate1 ~rand @@ gen_prog_qchek i) args
+  |> List.to_seq
+  |> Hashtbl.of_seq
+
+open Picos
+open Bechamel
+
+let bench_tree_sync name f =
+  Test.make_indexed ~name ~fmt:"%s %d"
+    ~args
+    (fun size -> Staged.stage @@ fun () ->
+      f @@ Hashtbl.find trees size)
+
+let bench_tree_async name f = 
+  Test.make_indexed ~name ~fmt:"%s %d"
+    ~args
+    (fun size ->
+       Staged.stage @@ fun () ->
+       Computation.await @@ f @@ Hashtbl.find trees size)
+
+let indexed_benchs =
+  let test_sync = bench_tree_sync "to_lambda sync" (to_lambda Env.empty) in
+  let test_async = bench_tree_async "to_lambda async" (to_lambda_tmca Env.empty) in
+  let test_tmca = bench_tree_async "to_lambda tmca" (to_lambda_tmca Env.empty) in
+  Test.make_grouped ~name:"tree bench" ~fmt:"%s %s"
+    [ test_sync;
+      test_async;
+      test_tmca; 
+    ]
+
+
+(** Bechamel boilerplate *)
+let run_benchmark file benchs =
+  let open Bechamel in
+  let instances = [ Toolkit.Instance.monotonic_clock ] in
+  let cfg =
+    Benchmark.cfg ~stabilize:true ~limit:1000 ~quota:(Time.second 10.) ()
+  in
+  let raw_results =
+    Benchmark.all cfg instances benchs
+  in
+  let ols =
+    Analyze.ols ~bootstrap:0 ~r_square:true ~predictors:[| Measure.run |]
+  in  
+  let results =
+    List.map (fun instance -> Analyze.all ols instance raw_results) instances
+  in
+  let results = Analyze.merge ols instances results in
+  let dst = Bechamel_js.channel file in
+  let nothing _ = Ok () in
+  let results =
+    Bechamel_js.emit ~dst nothing ~compare ~x_label:Measure.run
+      ~y_label:(Measure.label Toolkit.Instance.monotonic_clock)
+      (results, raw_results)
+  in
+  match results with Ok () -> () | Error (`Msg err) -> invalid_arg err
+
+let main () =
+  run_benchmark "malfunction.raw.json" indexed_benchs;
+  ()
+
+let () =
+  let pool = Moonpool.Ws_pool.create ~num_threads:n_domains () in
+  Moonpool.Runner.run_wait_block pool main

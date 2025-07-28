@@ -1,5 +1,5 @@
 (executable
-  (name bench)
+ (name bench)
  (libraries compiler-libs.bytecomp compiler-libs.optcomp malfunction
             qcheck-core bechamel bechamel-js)
-  (modules bench))
+ (modules bench))
