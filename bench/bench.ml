@@ -54,6 +54,11 @@ let tag n = `Tag n
 
 
 
+let gen_sum n =
+  Gen.((fun k -> (k, n-k)) <$> (int_bound n))
+
+
+
 let gen_prog_qcheck size =
   size |> Gen.(fix (fun self n ->
                    match n with
@@ -62,13 +67,16 @@ let gen_prog_qcheck size =
                       frequency
                         [3, num <$> nat;
                          4, veclen <$> (self (n-1));
-                         5, map3 numop2
-                              (oneofl [`Add; `Sub; `Mul; `Div; `Mod])
-                              (self (n/2))
-                              (self (n/2));
-                         1, map2 vecnew (self (n/2)) (self (n/2));
-                         4, map2 switch (self (n/2))
-                              (list @@ pair (list (tag <$> nat)) (self (n/2)))
+                         5, (gen_sum n) >>= (fun (k, nk) ->
+                           map3 numop2
+                             (oneofl [`Add; `Sub; `Mul; `Div; `Mod])
+                             (self k)
+                             (self nk));
+                         1, (gen_sum n) >>= (fun (k, nk) ->
+                           map2 vecnew (self k) (self nk));
+                         4, (gen_sum n) >>= (fun (k, nk) ->
+                           map2 switch (self k)
+                             ((1 -- 1312) >>= (fun k -> list_size (pure k) @@ pair (list (tag <$> nat)) (self (nk/k)))))
                         ]
           ))
 
@@ -76,8 +84,8 @@ let gen_prog_qcheck size =
 
 
 
-let _ =
-  to_lambda_tmca Env.empty (Gen.generate1 (gen_prog_qcheck size))
+(* let _ = *)
+(*   to_lambda_tmca Env.empty (Gen.generate1 (gen_prog_qcheck size)) *)
 
 
 (* let gen_vector_op size : t = *)
