@@ -125,7 +125,7 @@ let bench_tree_async name f =
 
 let indexed_benchs =
   let test_sync = bench_tree_sync "to_lambda sync" (to_lambda Env.empty) in
-  let test_async = bench_tree_async "to_lambda async" (to_lambda_tmca Env.empty) in
+  let test_async = bench_tree_async "to_lambda async" (to_lambda_async Env.empty) in
   let test_tmca = bench_tree_async "to_lambda tmca" (to_lambda_tmca Env.empty) in
   Test.make_grouped ~name:"tree bench" ~fmt:"%s %s"
     [ test_sync;
