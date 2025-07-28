@@ -77,7 +77,8 @@ let gen_prog_qcheck size =
                            map2 vecnew (self k) (self nk));
                          4, n-1 |> gen_sum >>= (fun (k, nk) ->
                            map2 switch (self k)
-                             ((1 -- 1312) >>= (fun k -> list_size (pure k) @@ pair (list (tag <$> nat)) (self (nk/k)))))
+                             ((1 -- 1312) >>= (fun k -> list_size (pure k) @@ pair (list_size (1--7)
+                                                                                   (tag <$> nat)) (self (nk/k)))))
                         ]
           ))
 
