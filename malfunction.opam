@@ -16,6 +16,10 @@ depends: [
   "cppo" {build}
   "omd" {with-test & >= "2.0.0~"}
   "zarith"
+  "moonpool"
+  "picos"
+  "bechamel" {with-test}
+  "bechamel-js" {with-test}
 ]
 synopsis: "Compiler back-end for functional languages, based on OCaml"
 description: """
