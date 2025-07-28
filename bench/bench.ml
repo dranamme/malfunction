@@ -43,6 +43,8 @@ let numop2 op l r = Mnumop2(op, `Int, l, r)
 
 let vecnew len def = Mvecnew(`Array, len, def)
 
+let veclen len = Mveclen (`Array, len)
+
 let switch e l = Mswitch (e, l)
 
 let num n = Mnum (`Int n)
@@ -59,6 +61,7 @@ let gen_prog_qcheck size =
                    | n ->
                       frequency
                         [3, num <$> nat;
+                         4, veclen <$> (self (n-1));
                          5, map3 numop2
                               (oneofl [`Add; `Sub; `Mul; `Div; `Mod])
                               (self (n/2))
