@@ -20,6 +20,7 @@ depends: [
   "picos"
   "bechamel" {with-test}
   "bechamel-js" {with-test}
+  "qcheck-core" {with-test}
 ]
 synopsis: "Compiler back-end for functional languages, based on OCaml"
 description: """
