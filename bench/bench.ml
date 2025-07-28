@@ -55,7 +55,8 @@ let tag n = `Tag n
 
 
 let gen_sum n =
-  Gen.((fun k -> (k, n-k)) <$> (int_bound n))
+  Gen.(let+ k = (int_bound (n-1)) in
+       (k, n-k))
 
 
 
@@ -67,14 +68,14 @@ let gen_prog_qcheck size =
                       frequency
                         [3, num <$> nat;
                          4, veclen <$> (self (n-1));
-                         5, (gen_sum n) >>= (fun (k, nk) ->
+                         5, n-1 |> gen_sum >>= (fun (k, nk) ->
                            map3 numop2
                              (oneofl [`Add; `Sub; `Mul; `Div; `Mod])
                              (self k)
                              (self nk));
-                         1, (gen_sum n) >>= (fun (k, nk) ->
+                         1, n-1 |> gen_sum >>= (fun (k, nk) ->
                            map2 vecnew (self k) (self nk));
-                         4, (gen_sum n) >>= (fun (k, nk) ->
+                         4, n-1 |> gen_sum >>= (fun (k, nk) ->
                            map2 switch (self k)
                              ((1 -- 1312) >>= (fun k -> list_size (pure k) @@ pair (list (tag <$> nat)) (self (nk/k)))))
                         ]
