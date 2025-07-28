@@ -87,10 +87,10 @@ let _ =
 
 let rand = Random.State.make [| seed |]
 
-(* range from 10¹ to 10⁶ elements, 5 points per order. *)
-let args = List.init 26 (fun x -> int_of_float (10. ** (float x/.5. +. 1.)))
+(* range from 10¹ to 10⁵ elements, 5 points per order. *)
+let args = List.init 21 (fun x -> int_of_float (10. ** (float x/.5. +. 1.)))
 let trees =
-  List.map (fun i -> i, Gen.generate1 ~rand @@ gen_prog_qchek i) args
+  List.map (fun i -> i, Gen.generate1 ~rand @@ gen_prog_qcheck i) args
   |> List.to_seq
   |> Hashtbl.of_seq
 
