@@ -54,38 +54,39 @@ let tag n = `Tag n
 
 
 
-let gen_sum n =
-  Gen.(if n <= 0 then pure (0, 0)
-       else let+ k = (int_bound (n-1)) in (k, n-k))
+let gen_sum ?(bound=max_int) n =
+  Gen.(if n <= 1 then pure (0, 0)
+       else let+ k = (int_bound @@ min bound (n-1)) in (k, n-k))
 
 
 
-let gen_prog_qcheck size =
-  size |> Gen.(fix (fun self n ->
-                   match n with
-                   | 0 -> num <$> nat
-                   | n ->
-                      frequency
-                        [1, num <$> nat;
-                         1, veclen <$> (self (n-1));
-                         3, n-1 |> gen_sum >>= (fun (k, nk) ->
-                           map3 numop2
-                             (oneofl [`Add; `Sub; `Mul; `Div; `Mod])
-                             (self k)
-                             (self nk));
-                         1, n-1 |> gen_sum >>= (fun (k, nk) ->
-                             map2 vecnew (self k) (self nk));
-                         4, (let* k = 1 -- max n 10 in
-                              let* t = self k in
-                              let* t' = self (n-k-1) in
-                              pure @@ Mlet ([`Unnamed t], t')
-                             );
-                         2, n-1 |> gen_sum >>= (fun (k, nk) ->
-                           map2 switch (self k)
-                             ((1 -- 1312) >>= (fun k -> list_size (pure k) @@ pair (list_size (1--7)
-                                                                                   (tag <$> nat)) (self (nk/k)))))
-                        ]
-          ))
+let gen_prog_qcheck =
+  let open Gen in
+  fix @@ fun self n ->
+  if n <= 1 then
+    num <$> nat
+  else
+    frequency
+      [1, num <$> nat;
+       1, veclen <$> (self (n-1));
+       3, n-1 |> gen_sum >>= (fun (k, nk) ->
+           map3 numop2
+             (oneofl [`Add; `Sub; `Mul; `Div; `Mod])
+             (self k)
+             (self nk));
+       1, n-1 |> gen_sum >>= (fun (k, nk) ->
+           map2 vecnew (self k) (self nk));
+       4, (let* k, nk = gen_sum ~bound:10 (n-1) in
+           let* t = self k in
+           let* t' = self nk in
+           pure @@ Mlet ([`Unnamed t], t')
+          );
+       2, n-1 |> gen_sum >>= (fun (k, nk) ->
+           map2 switch (self k)
+             ((1 -- 1312) >>= (fun k -> list_size (pure k) @@ pair (list_size (1--7)
+                                                                      (tag <$> nat)) (self (nk/k)))))
+      ]
+)
 
 
 
