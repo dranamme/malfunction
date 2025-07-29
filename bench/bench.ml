@@ -110,6 +110,7 @@ let trees =
 open Picos
 open Bechamel
 
+
 let bench_tree_sync name f =
   Test.make_indexed ~name ~fmt:"%s %d"
     ~args
@@ -124,9 +125,10 @@ let bench_tree_async name f =
        Computation.await @@ f @@ Hashtbl.find trees size)
 
 let indexed_benchs =
-  let test_sync = bench_tree_sync "to_lambda sync" (to_lambda Env.empty) in
-  let test_async = bench_tree_async "to_lambda async" (to_lambda_async Env.empty) in
-  let test_tmca = bench_tree_async "to_lambda tmca" (to_lambda_tmca Env.empty) in
+  Compmisc.init_path ();
+  let test_sync = bench_tree_sync "to_lambda sync" (to_lambda (Compmisc.initial_env ())) in
+  let test_async = bench_tree_async "to_lambda async" (to_lambda_async (Compmisc.initial_env ())) in
+  let test_tmca = bench_tree_async "to_lambda tmca" (to_lambda_tmca (Compmisc.initial_env ())) in
   Test.make_grouped ~name:"tree bench" ~fmt:"%s %s"
     [ test_sync;
       test_async;
