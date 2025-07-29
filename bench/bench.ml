@@ -6,7 +6,7 @@ open Malfunction_compiler
 open QCheck2
 
 
-let n_domains = 4 (* Degree of parallelism *)
+let n_domains = 10 (* Degree of parallelism *)
 let seed = 1312 (* Seed for random tree gen. *)
 
 let () =
@@ -85,8 +85,8 @@ and size_of_binding_list l =
 
 let rand = Random.State.make [| seed |]
 
-(* range from 10¹ to 10⁶ elements, 5 points per order. *)
-let args = List.init 26 (fun x -> int_of_float (10. ** (float x/.5. +. 1.)))
+(* range from 10¹ to 10⁷ elements, 5 points per order. *)
+let args = List.init 31 (fun x -> int_of_float (10. ** (float x/.5. +. 1.)))
 let trees =
   List.map (fun i -> i, Gen.generate1 ~rand @@ gen_prog_qcheck i) args
   |> List.to_seq
@@ -95,7 +95,7 @@ let trees =
 let () =    
   Format.printf "@[<v2>Sizes : {@ ";
   Seq.iter
-    (fun (i, t) -> Format.printf "%i: %i;@," i (size_of_term t))
+    (fun (i, t) -> Format.printf "%i: %i,@," i (size_of_term t))
     (Hashtbl.to_seq trees);
   Format.printf "}@]";
   ()
