@@ -75,7 +75,7 @@ let gen_prog_qcheck size =
                              (self nk));
                          1, n-1 |> gen_sum >>= (fun (k, nk) ->
                              map2 vecnew (self k) (self nk));
-                         10, (let* k = 1 -- max n 10 in
+                         4, (let* k = 1 -- max n 10 in
                               let* t = self k in
                               let* t' = self (n-k-1) in
                               pure @@ Mlet ([`Unnamed t], t')
