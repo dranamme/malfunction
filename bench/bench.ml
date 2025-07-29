@@ -66,16 +66,21 @@ let gen_prog_qcheck size =
                    | 0 -> num <$> nat
                    | n ->
                       frequency
-                        [3, num <$> nat;
-                         4, veclen <$> (self (n-1));
-                         5, n-1 |> gen_sum >>= (fun (k, nk) ->
+                        [1, num <$> nat;
+                         1, veclen <$> (self (n-1));
+                         3, n-1 |> gen_sum >>= (fun (k, nk) ->
                            map3 numop2
                              (oneofl [`Add; `Sub; `Mul; `Div; `Mod])
                              (self k)
                              (self nk));
                          1, n-1 |> gen_sum >>= (fun (k, nk) ->
-                           map2 vecnew (self k) (self nk));
-                         4, n-1 |> gen_sum >>= (fun (k, nk) ->
+                             map2 vecnew (self k) (self nk));
+                         10, (let* k = 1 -- max n 10 in
+                              let* t = self k in
+                              let* t' = self (n-k-1) in
+                              pure @@ Mlet ([`Unnamed t], t')
+                             );
+                         2, n-1 |> gen_sum >>= (fun (k, nk) ->
                            map2 switch (self k)
                              ((1 -- 1312) >>= (fun k -> list_size (pure k) @@ pair (list_size (1--7)
                                                                                    (tag <$> nat)) (self (nk/k)))))
@@ -100,8 +105,8 @@ let gen_prog_qcheck size =
 
 let rand = Random.State.make [| seed |]
 
-(* range from 10¹ to 10⁵ elements, 5 points per order. *)
-let args = List.init 21 (fun x -> int_of_float (10. ** (float x/.5. +. 1.)))
+(* range from 10¹ to 10⁴ elements, 5 points per order. *)
+let args = List.init 16 (fun x -> int_of_float (10. ** (float x/.5. +. 1.)))
 let trees =
   List.map (fun i -> i, Gen.generate1 ~rand @@ gen_prog_qcheck i) args
   |> List.to_seq
