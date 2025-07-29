@@ -90,6 +90,28 @@ let gen_prog_qcheck =
 
 
 
+let rec size_of_term t =
+  match t with
+  | Mvar _ | Mnum _ | Mstring _ | Mglobal _ -> 1
+  | Mnumop1 (_,_, e) | Mconvert (_, _, e) | Mlazy e | Mforce e
+    | Mfield (_ ,e) | Mveclen (_, e) | Mlambda (_, e) -> size_of_term e + 1
+  | Mnumop2 (_, _, e1, e2) | Mvecnew (_, e1, e2) | Mvecget (_, e1, e2) -> 1 + size_of_term e1 + size_of_term e2
+  | Mlet (l, t) -> 1 + size_of_binding_list l + size_of_term t
+  | Mapply (t, l) -> List.fold_left (fun i t -> i + size_of_term t) (1 + size_of_term t) l
+  | Mswitch (t, l) ->  List.fold_left (fun i (_,t) -> i + size_of_term t) (1 + (size_of_term t)) l
+  | Mblock (_, l) -> List.fold_left (fun i t -> i + size_of_term t) 1 l
+  | Mvecset (_, e1, e2, e3) -> 1 + size_of_term e1 + size_of_term e2 + size_of_term e3
+
+
+and size_of_binding_list l =
+  List.fold_left (fun i b -> match b with
+                  | `Unnamed e | `Named (_, e) -> size_of_term e + i
+                  | `Recursive l ->
+                     List.fold_left (fun i (_,t) -> i + size_of_term t) i l) 0 l
+
+
+
+
 
 
 (* let _ = *)
